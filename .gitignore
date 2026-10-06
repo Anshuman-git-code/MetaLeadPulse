@@ -1,0 +1,48 @@
+# Environment variables / secrets
+# Contains Meta App Secret, Page Access Token, verify token, etc.
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Node / Backend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Expo / React Native
+mobile/.expo/
+mobile/dist/
+mobile/web-build/
+mobile/.metro-health-check*
+mobile/.kotlin/
+
+# Generated native projects
+# Revisit this if the project later intentionally commits ios/ or android/
+mobile/ios/
+mobile/android/
+
+# Native signing / certificate files
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+
+# TypeScript
+*.tsbuildinfo
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor / IDE local files
+.vscode/settings.json
+.idea/
+
+# Windows
+Thumbs.db
