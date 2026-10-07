@@ -1,4 +1,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
+// LOAD ENVIRONMENT VARIABLES — must be the very first thing that runs
+// ─────────────────────────────────────────────────────────────────────────────
+// dotenv reads the .env file and loads every variable into process.env.
+// It must run before any other code so that all later require() calls and
+// config references can access process.env.META_VERIFY_TOKEN etc.
+//
+// require('dotenv').config() is the standard one-liner for this.
+// If .env does not exist (e.g. in CI), dotenv silently does nothing —
+// the variables would then come from the real environment instead.
+require('dotenv').config();
+
+// ─────────────────────────────────────────────────────────────────────────────
 // server.js — The entry point for the entire backend.
 //
 // This file starts the HTTP server, connects Express (routing) and

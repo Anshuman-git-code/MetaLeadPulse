@@ -569,4 +569,96 @@ curl -X POST http://localhost:3001/test/lead \
 
 ---
 
+---
+
+## Phase 7 — Branch and Environment Setup
+
+### 7.1 — Created the feature branch
+
+Branch created from `main`:
+```bash
+git switch main
+git pull origin main
+git switch -c feat/meta-webhook
+```
+
+All work for the Meta webhook issue happens on this branch.
+
+### 7.2 — Created backend/.env
+
+File created: `backend/.env` (not committed — covered by .gitignore)
+
+Contains the five Meta environment variables the integration needs:
+```
+META_APP_ID=          ← numeric App ID from Meta Developer Dashboard
+META_APP_SECRET=      ← App Secret, used for webhook signature verification
+META_VERIFY_TOKEN=    ← a random string you choose, entered in Meta dashboard too
+META_PAGE_ID=         ← numeric Facebook Page ID (to be filled in)
+META_PAGE_ACCESS_TOKEN= ← Page token with lead permissions (to be filled in)
+```
+
+`META_PAGE_ID` and `META_PAGE_ACCESS_TOKEN` are needed later for Graph API
+calls (Phase 13+). They are not required for Phase 8 or 9.
+
+### 7.3 — Created backend/.env.example
+
+File created: `backend/.env.example` (committed to Git)
+
+Same variable names as `.env` but with empty values and comments explaining
+what each variable is and where to find it. This is the file another developer
+would copy and fill in when setting up the project locally.
+
+### 7.4 — Installed dotenv
+
+```bash
+cd backend
+npm install dotenv
+```
+
+`dotenv` is a package that reads the `.env` file and loads every variable
+into `process.env` so our code can access them as `process.env.META_VERIFY_TOKEN` etc.
+
+After install, `backend/package.json` dependencies became:
+```json
+"dependencies": {
+  "dotenv": "^16.x.x",
+  "express": "^5.2.1",
+  "socket.io": "^4.8.4"
+}
+```
+
+### 7.5 — Loaded dotenv at the top of server.js
+
+Modified: `backend/src/server.js`
+
+Added as the very first line before any other require():
+```js
+require('dotenv').config();
+```
+
+Why first: every other module that runs after this can safely read
+`process.env.*`. If dotenv runs after other requires, those modules
+would see undefined for all Meta variables.
+
+### 7.6 — Verified environment variables load correctly
+
+Ran a quick Node check:
+```bash
+node --input-type=commonjs << 'EOF'
+require('dotenv').config();
+console.log('META_VERIFY_TOKEN loaded:', process.env.META_VERIFY_TOKEN ? 'YES' : 'NO');
+console.log('META_APP_SECRET loaded:', process.env.META_APP_SECRET ? 'YES' : 'NO');
+console.log('META_APP_ID loaded:', process.env.META_APP_ID ? 'YES' : 'NO');
+EOF
+```
+
+Output confirmed all three active variables load correctly:
+```
+META_VERIFY_TOKEN loaded: YES
+META_APP_SECRET loaded: YES
+META_APP_ID loaded: YES
+```
+
+---
+
 *This file is updated at the end of every new phase.*
