@@ -148,7 +148,24 @@ app.get('/health', (req, res) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 9 — Development test route: POST /test/lead
+// STEP 9 — Mount the Meta webhook router
+// ─────────────────────────────────────────────────────────────────────────────
+// WHY this is here:
+// We created backend/src/webhook/index.js which defines all Meta webhook
+// routes. We import that router here and mount it at '/webhook/meta'.
+//
+// What this means:
+//   router.get('/')  inside webhook/index.js → GET  /webhook/meta
+//   router.post('/') inside webhook/index.js → POST /webhook/meta  (Phase 9)
+//
+// Keeping webhook logic in its own file means server.js stays clean.
+// It just says "anything at /webhook/meta is handled by this module."
+const webhookRouter = require('./webhook');
+app.use('/webhook/meta', webhookRouter);
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 10 — Development test route: POST /test/lead
 // ─────────────────────────────────────────────────────────────────────────────
 // WHY this route exists here:
 // We wrote mobile/src/app/index.tsx which listens for a "new-lead" event
@@ -213,7 +230,7 @@ app.post('/test/lead', (req, res) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 10 — Listen for Socket.IO client connections
+// STEP 11 — Listen for Socket.IO client connections
 // ─────────────────────────────────────────────────────────────────────────────
 // WHY this block is here:
 // mobile/src/services/socket.ts creates a Socket.IO client and connects to
@@ -244,7 +261,7 @@ io.on('connection', (socket) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 11 — Define the port and start listening
+// STEP 12 — Define the port and start listening
 // ─────────────────────────────────────────────────────────────────────────────
 // Everything above just sets up the configuration. Nothing actually runs until
 // httpServer.listen() is called here. This is the line that opens the port

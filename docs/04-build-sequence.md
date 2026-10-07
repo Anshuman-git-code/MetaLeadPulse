@@ -661,4 +661,110 @@ META_APP_ID loaded: YES
 
 ---
 
+## Phase 8 — Webhook Verification (GET /webhook/meta)
+
+### 8.1 — Created the webhook module folder
+
+```bash
+mkdir backend/src/webhook
+```
+
+This is the start of the folder structure planned in docs/03-architecture.md Section 9:
+```
+backend/src/
+  ├── webhook/    ← receive and verify inbound Meta events
+  ├── meta/       ← (later) Graph API client
+  ├── leads/      ← (later) normalization
+  └── realtime/   ← (later) Socket.IO
+```
+
+### 8.2 — Created backend/src/webhook/index.js
+
+File created: `backend/src/webhook/index.js`
+
+This file exports an Express Router. It handles all Meta webhook routes.
+Separating it from server.js keeps Meta-specific logic in one place.
+
+**What the GET handler does:**
+
+Meta's webhook verification works like this:
+```
+Meta                              Our backend
+  │                                    │
+  │  GET /webhook/meta                 │
+  │  ?hub.mode=subscribe               │
+  │  &hub.verify_token=<our_token>     │
+  │  &hub.challenge=<random_number>    │
+  │ ─────────────────────────────────► │
+  │                                    │  check: mode === 'subscribe'?
+  │                                    │  check: token === META_VERIFY_TOKEN?
+  │                                    │
+  │  ◄─────────────────────────────── │
+  │  200 + challenge value (if passed) │
+  │  403 (if failed)                   │
+```
+
+The handler:
+1. Reads `hub.mode`, `hub.verify_token`, `hub.challenge` from `req.query`
+2. Compares token against `process.env.META_VERIFY_TOKEN` (loaded from .env)
+3. If `mode === 'subscribe'` AND token matches → `res.send(challenge)` (200)
+4. If either fails → `res.sendStatus(403)`
+5. Logs the outcome (but never logs the token value itself)
+
+### 8.3 — Mounted the webhook router in server.js
+
+Modified: `backend/src/server.js`
+
+Added as Step 9 (renumbered subsequent steps):
+```js
+const webhookRouter = require('./webhook');
+app.use('/webhook/meta', webhookRouter);
+```
+
+`app.use('/webhook/meta', webhookRouter)` means:
+- Every route defined as `'/'` in `webhookRouter` becomes `/webhook/meta`
+- Every route defined as `'/something'` becomes `/webhook/meta/something`
+- server.js does not need to know the internal details of the webhook module
+
+### 8.4 — Tested verification locally with curl
+
+**Test 1 — Correct token (should return challenge with 200):**
+```bash
+curl -s "http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=<META_VERIFY_TOKEN>&\
+hub.challenge=TESTCHALLENGE123"
+```
+Result: `200` status, body: `TESTCHALLENGE123` ✓
+
+**Test 2 — Wrong token (should return 403):**
+```bash
+curl -s -o /dev/null -w "%{http_code}" \
+"http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=wrongtoken&\
+hub.challenge=TESTCHALLENGE123"
+```
+Result: `403` ✓
+
+**Backend terminal confirmed:**
+```
+Webhook verification request received
+  hub.mode: subscribe
+  hub.verify_token received: YES
+  hub.challenge: TESTCHALLENGE123
+Webhook verification successful — challenge returned
+
+Webhook verification request received
+  hub.mode: subscribe
+  hub.verify_token received: YES
+  hub.challenge: TESTCHALLENGE123
+Webhook verification failed — token mismatch
+```
+
+Both paths work correctly. Meta will use the same GET request during
+dashboard setup — this handler is ready for that.
+
+---
+
 *This file is updated at the end of every new phase.*
