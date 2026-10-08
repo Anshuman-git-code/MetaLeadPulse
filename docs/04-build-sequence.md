@@ -931,4 +931,210 @@ recording the demo Loom. Long-lived token exchange can be done later if needed.
 
 ---
 
+## Phase 11 — Local End-to-End Test and Documentation
+
+### 11.1 — Purpose of this phase
+
+Before moving to the next feature (ngrok + Meta Dashboard setup), we run
+one clean full test of the entire webhook feature locally. This confirms
+that all routes introduced in Phases 7–10 work together without conflict
+and produces a reference test sequence for the build log.
+
+### 11.2 — Complete test sequence
+
+Server started with `npm start` in `backend/`. Five tests run in sequence:
+
+**Test 1 — GET /health**
+```bash
+curl -s http://localhost:3001/health
+```
+Response: `{"status":"ok"}`
+Confirms: server starts, Express is running, dotenv loaded correctly. ✓
+
+**Test 2 — GET /webhook/meta with correct token**
+```bash
+curl -s "http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=<META_VERIFY_TOKEN>&\
+hub.challenge=CHALLENGE_ABCDEF"
+```
+Response body: `CHALLENGE_ABCDEF`
+Confirms: verification passes, challenge echoed back exactly. ✓
+
+**Test 3 — GET /webhook/meta with wrong token**
+```bash
+curl -s -o /dev/null -w "%{http_code}" \
+"http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=WRONG_TOKEN&\
+hub.challenge=CHALLENGE_ABCDEF"
+```
+HTTP status: `403`
+Confirms: wrong token is rejected correctly. ✓
+
+**Test 4 — POST /webhook/meta with valid leadgen payload**
+
+Payload simulates what Meta sends for a real lead event:
+```json
+{
+  "object": "page",
+  "entry": [{
+    "id": "123456789",
+    "time": 1728259200,
+    "changes": [{
+      "field": "leadgen",
+      "value": {
+        "leadgen_id": 987654321,
+        "page_id": 123456789,
+        "form_id": 111222333,
+        "created_time": 1728259200
+      }
+    }]
+  }]
+}
+```
+HMAC-SHA256 signature computed from META_APP_SECRET and sent in header.
+
+HTTP status: `200`
+Backend terminal logged:
+```
+Webhook POST received — object type: page
+Lead event received:
+  leadgen_id:    987654321
+  page_id:       123456789
+  form_id:       111222333
+  created_time:  1728259200
+  → Ready for Graph API retrieval (next phase)
+```
+Confirms: signature verified, payload parsed, leadgen event extracted. ✓
+
+**Test 5 — POST /test/lead (existing dev route)**
+```bash
+curl -s -X POST http://localhost:3001/test/lead \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Deepa Nair","email":"deepa@example.com","phone":"9812345678"}'
+```
+HTTP status: `201`
+Confirms: existing routes not broken by webhook body parsing changes. ✓
+
+### 11.3 — What this issue has built
+
+At the start of this issue the system was:
+```
+POST /test/lead  →  backend  →  Socket.IO  →  React Native
+```
+
+At the end of this issue the system is:
+```
+Meta Lead Testing Tool
+        ↓
+Meta fires leadgen event
+        ↓
+POST /webhook/meta  (HTTPS + X-Hub-Signature-256)
+        ↓
+Verify signature (HMAC-SHA256 with META_APP_SECRET)
+        ↓
+Parse payload
+        ↓
+Extract leadgen_id, page_id, form_id
+        ↓
+Log identifiers
+        ↓  ← stopping point for this issue
+[Graph API call — next issue]
+```
+
+Socket.IO and React Native are untouched — they still work exactly as before.
+
+### 11.4 — What is NOT done yet (next issue scope)
+
+- ngrok tunnel to expose local backend to the internet
+- Meta Developer App dashboard — webhook URL + verification setup
+- Page subscription to `leadgen` events
+- Meta Lead Testing Tool — real webhook delivery test
+- Graph API call using `leadgen_id` to retrieve actual lead data
+- Socket.IO emit of real lead to React Native
+
+---
+
+## Current State of the Project
+
+### Files created or modified across all phases so far
+
+```
+MetaLeadPulse/
+├── .gitignore
+├── README.md
+├── docs/
+│   ├── 01-problem-understanding.md
+│   ├── 02-meta-integration-research.md
+│   ├── 03-architecture.md
+│   ├── 04-build-sequence.md          ← this file
+│   └── decisions/
+│       ├── 001-realtime-communication.md
+│       └── 002-no-persistent-storage.md
+├── backend/
+│   ├── .env                          (not committed — contains secrets)
+│   ├── .env.example                  (committed — variable names only)
+│   ├── package.json                  (express + socket.io + dotenv)
+│   └── src/
+│       ├── server.js                 (steps 1–12, webhook router mounted)
+│       └── webhook/
+│           └── index.js              (GET verification + POST event handler)
+└── mobile/
+    └── src/
+        ├── app/
+        │   └── index.tsx             (Leads screen)
+        └── services/
+            └── socket.ts             (Socket.IO client)
+```
+
+### How to run the current state from scratch
+
+**Terminal 1 — Backend:**
+```bash
+cd MetaLeadPulse/backend
+npm install        # only needed first time
+npm start
+```
+Expected:
+```
+Backend running on http://localhost:3001
+Health check: http://localhost:3001/health
+Test lead:   POST http://localhost:3001/test/lead
+```
+
+**Terminal 2 — Mobile:**
+```bash
+cd MetaLeadPulse/mobile
+npm install        # only needed first time
+npx expo start
+```
+Press `i` for iOS simulator.
+
+**Test webhook verification:**
+```bash
+curl "http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=<your_META_VERIFY_TOKEN>&\
+hub.challenge=TEST123"
+# Expected response: TEST123
+```
+
+**Test a fake lead (realtime pipeline):**
+```bash
+curl -X POST http://localhost:3001/test/lead \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Rahul","email":"rahul@example.com","phone":"9876543210"}'
+```
+
+### What is not done yet
+
+- ngrok + Meta Dashboard webhook configuration
+- Page subscription to leadgen events
+- Meta Lead Testing Tool end-to-end test
+- Graph API call to retrieve actual lead data from leadgen_id
+- Socket.IO emit of real Meta lead to React Native
+
+---
+
 *This file is updated at the end of every new phase.*
