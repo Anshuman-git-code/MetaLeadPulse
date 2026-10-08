@@ -1549,4 +1549,222 @@ watch backend terminal for `leadgen_id`.
 
 ---
 
+## Phase 18 — Manual Graph API Test
+
+### 18.1 — Direct curl test with real leadgen_id
+
+Before writing any code, tested the Graph API directly from the terminal
+using the real `leadgen_id` from the previous phase:
+
+```bash
+curl -s "https://graph.facebook.com/v26.0/780674821807675?access_token=<PAGE_TOKEN>"
+```
+
+Response:
+```json
+{
+  "created_time": "2026-10-08T08:20:43+0000",
+  "id": "780674821807675",
+  "field_data": [
+    { "name": "email",     "values": ["test@meta.com"] },
+    { "name": "full_name", "values": ["<test lead: dummy data for full_name>"] }
+  ]
+}
+```
+
+Key findings:
+- Graph API works with the current Page Access Token ✓
+- Meta uses `full_name` not `name` as the field key
+- No `phone_number` field — form didn't collect it
+- Node 24 has native `fetch` built in — no extra package needed
+
+---
+
+## Phase 19 — Create Meta API Client Module
+
+File created: `backend/src/meta/index.js`
+
+**What it does:** Single exported function `retrieveLead(leadgenId)` that:
+- Reads `META_PAGE_ACCESS_TOKEN` from `process.env`
+- Calls `GET https://graph.facebook.com/v26.0/<leadgenId>?access_token=<token>`
+- Returns the raw API response object
+- Throws a descriptive error if Meta returns an error in the response body
+
+**Why a separate module:** The webhook handler, normalizer, and realtime layer
+each have one job. The Meta API client's job is "talk to Meta" — nothing else.
+
+Tested standalone:
+```
+Retrieving lead 780674821807675 from Meta Graph API...
+Lead 780674821807675 retrieved successfully
+Raw response: { id, created_time, field_data: [...] }
+```
+
+---
+
+## Phase 20 — Create Lead Normalizer Module
+
+File created: `backend/src/leads/index.js`
+
+**What it does:** Single exported function `normalizeLead(metaLead)` that:
+- Takes the raw Meta API response
+- Uses a helper `findField(fieldData, fieldName)` to extract values from
+  Meta's `field_data` array by field name
+- Returns a plain object matching the application Lead model:
+  `{ id, name, email, phone, createdAt }`
+
+**Field mapping:**
+
+| Meta field | App field |
+|---|---|
+| `id` | `id` |
+| `full_name` | `name` |
+| `email` | `email` |
+| `phone_number` | `phone` |
+| `created_time` | `createdAt` |
+
+**Missing field handling:** `findField()` returns `''` if a field is absent.
+The Lead object always has all keys — some may be empty strings.
+
+Tested standalone with real data:
+```json
+{
+  "id": "780674821807675",
+  "name": "<test lead: dummy data for full_name>",
+  "email": "test@meta.com",
+  "phone": "",
+  "createdAt": "2026-10-08T08:20:43+0000"
+}
+```
+
+---
+
+## Phase 21 — Wire Graph API Call into Webhook Handler
+
+Modified: `backend/src/webhook/index.js`
+
+**Two changes:**
+
+1. Added imports at the top:
+```js
+const { retrieveLead }  = require('../meta');
+const { normalizeLead } = require('../leads');
+```
+
+2. Replaced the placeholder comment in Step 7 with the actual implementation:
+   - After extracting `leadgen_id`, calls `retrieveLead(leadgen_id)` in an
+     async IIFE (because forEach doesn't support async/await directly)
+   - Passes the result to `normalizeLead()` to get the application Lead model
+   - Logs the normalized lead fields
+   - Catches and logs errors (e.g. expired token, invalid ID)
+   - Includes a placeholder comment for the Socket.IO emission (next phase)
+
+**WHY async IIFE:**
+The 200 response is already sent to Meta in Step 1. All processing after that
+is fire-and-forget. An async IIFE inside forEach lets us use await without
+blocking the response.
+
+Local test confirmed:
+```
+Webhook POST received — object type: page
+Lead event received:
+  leadgen_id:    780674821807675
+Retrieving lead 780674821807675 from Meta Graph API...
+Lead 780674821807675 retrieved successfully
+Normalized lead ready:
+  id:         780674821807675
+  name:       <test lead: dummy data for full_name>
+  email:      test@meta.com
+  phone:      (not provided)
+  createdAt:  2026-10-08T08:20:43+0000
+  → Ready for Socket.IO emission (next phase)
+```
+
+---
+
+## Phase 22 — End-to-End Test and Documentation
+
+### 22.1 — ngrok URL changed during this phase
+
+ngrok was restarted and the URL changed from:
+```
+a52e-2401-4900-8fd3-bfb0-2513-c96-df1f-cec9.ngrok-free.app
+```
+to:
+```
+af2f-2401-4900-8fd3-bfb0-2513-c96-df1f-cec9.ngrok-free.app
+```
+
+Steps taken to reconnect:
+1. Updated webhook callback URL in Meta Dashboard → LeadPulse2 → Webhooks → Page
+2. Re-ran verification — confirmed successful
+3. Re-subscribed Page to leadgen events via Graph API
+
+### 22.2 — Lead Testing Tool delivery issue
+
+The Lead Testing Tool showed `webhooks.delivery.rejected` for the first
+test lead. Root cause: the tool caches failed delivery attempts and does
+not retry for the same form even after the URL is fixed.
+
+Fix: created a new Instant Form ("New2 form 08/10/2026, 20:35") in Ads Manager.
+The Lead Testing Tool sent a fresh webhook event for the new form.
+
+### 22.3 — Full end-to-end pipeline confirmed with real lead
+
+Meta Lead Testing Tool submitted a lead on the new form.
+Backend terminal showed:
+
+```
+Webhook POST received — object type: page
+Lead event received:
+  leadgen_id:    1738241657823153
+  page_id:       1406252395897553
+  form_id:       2175438523406053
+  created_time:  1791472678
+Retrieving lead 1738241657823153 from Meta Graph API...
+Lead 1738241657823153 retrieved successfully
+Normalized lead ready:
+  id:         1738241657823153
+  name:       <test lead: dummy data for full_name>
+  email:      test@meta.com
+  phone:      (not provided)
+  createdAt:  2026-10-08T15:17:58+0000
+  → Ready for Socket.IO emission (next phase)
+```
+
+Lead Testing Tool confirmed: `Status: Success` ✓
+
+The complete pipeline from Meta → webhook → Graph API → normalized Lead is
+working end to end.
+
+### 22.4 — Current pipeline state
+
+```
+Meta Lead Testing Tool
+        ↓
+Meta fires leadgen webhook (real IDs)
+        ↓
+POST /webhook/meta
+        ↓
+X-Hub-Signature-256 verified ✓
+        ↓
+leadgen_id extracted ✓
+        ↓
+Graph API: GET /v26.0/<leadgen_id> ✓
+        ↓
+field_data returned ✓
+        ↓
+Normalized Lead { id, name, email, phone, createdAt } ✓
+        ↓
+→ Socket.IO emission (next phase)
+```
+
+### 22.5 — What is NOT done yet
+
+- `io.emit('new-lead', lead)` — connect normalized lead to Socket.IO
+- React Native app receiving and displaying the real Meta lead
+- This is the final connection — the next and last feature
+
+---
+
 *This file is updated at the end of every new phase.*
