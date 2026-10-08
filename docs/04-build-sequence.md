@@ -1767,4 +1767,155 @@ Normalized Lead { id, name, email, phone, createdAt } ✓
 
 ---
 
+## Phase 23 — Create Realtime Publisher Module
+
+File created: `backend/src/realtime/index.js`
+
+**Why a separate module:**
+The webhook handler produces a normalized Lead. The Socket.IO server (`io`)
+lives in server.js. These two sides don't know about each other directly.
+This module is the bridge — it holds a reference to `io` and exposes a clean
+`publishLead()` function that any other module can call.
+
+**Pattern used: dependency injection**
+server.js creates `io`, then calls `realtime.init(io)` to pass it in.
+This avoids a circular dependency (server → realtime → server).
+
+**Two exported functions:**
+
+`init(socketServer)` — stores the io reference. Called once from server.js
+right after Socket.IO is created. Must be called before any lead arrives.
+
+`publishLead(lead)` — calls `io.emit('new-lead', lead)` to broadcast the
+normalized Lead to all connected clients. Logs the connected client count.
+The event name `new-lead` matches exactly what `mobile/src/app/index.tsx`
+listens for.
+
+---
+
+## Phase 24 — Wire Realtime Publisher into server.js and webhook/index.js
+
+**Two changes:**
+
+**Change 1 — server.js (Step 6b):**
+Added immediately after `io` is created:
+```js
+const realtime = require('./realtime');
+realtime.init(io);
+```
+This gives the realtime module its `io` reference before any leads can arrive.
+
+**Change 2 — webhook/index.js:**
+- Added import: `const { publishLead } = require('../realtime');`
+- Replaced the placeholder comment in Step 7 with: `publishLead(lead);`
+- Updated the import comment to describe the full 4-step pipeline:
+  `retrieveLead → normalizeLead → publishLead → React Native`
+
+Server startup log confirmed: `Realtime publisher initialized`
+
+Local test confirmed:
+- `/test/lead` still works — `201`, lead emitted ✓
+- `POST /webhook/meta` with real leadgen_id → Graph API → normalize → emit ✓
+
+---
+
+## Phase 25 — End-to-End Verification
+
+### 25.1 — Socket.IO → React Native confirmed with /test/lead
+
+With the Expo app open on phone and iOS simulator:
+
+```bash
+curl -X POST http://localhost:3001/test/lead \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Rahul Sharma","email":"rahul@test.com","phone":"9876543210"}'
+```
+
+Backend: `New lead emitted to 3 client(s)` ✓
+Phone: lead card appeared without touching device ✓
+iOS simulator: lead appeared ✓
+Web: `New lead received` logged ✓
+
+Three clients connected: phone, iOS simulator, web browser.
+
+### 25.2 — ngrok URL changed again — updated Meta Dashboard
+
+ngrok restarted and gave a new URL:
+```
+https://10dc-2401-4900-8fd3-bfb0-d9ff-4518-38b-8133.ngrok-free.app
+```
+
+Updated Meta Dashboard callback URL to:
+```
+https://10dc-2401-4900-8fd3-bfb0-d9ff-4518-38b-8133.ngrok-free.app/webhook/meta
+```
+
+Re-subscribed Page to leadgen events via terminal command.
+
+### 25.3 — Real Meta lead → phone confirmed
+
+Lead Testing Tool: deleted existing lead → created new lead.
+
+Backend terminal:
+```
+Webhook POST received — object type: page
+Lead event received:
+  leadgen_id:    1035508336163452
+  page_id:       1406252395897553
+  form_id:       2175438523406053
+  created_time:  1791475691
+Retrieving lead 1035508336163452 from Meta Graph API...
+Lead 1035508336163452 retrieved successfully
+Normalized lead ready:
+  id:         1035508336163452
+  name:       <test lead: dummy data for full_name>
+  email:      test@meta.com
+  phone:      (not provided)
+  createdAt:  2026-10-08T16:08:11+0000
+Emitting new-lead to 3 connected client(s)
+new-lead emitted — lead id: 1035508336163452
+```
+
+Phone: lead card appeared — `<test lead: dummy data for full_name> / test@meta.com / 21:38:11` ✓
+iOS simulator: lead appeared ✓
+Web: `New lead received` ✓
+
+No device interaction. No manual refresh. No `/test/lead`.
+
+### 25.4 — Complete pipeline now working end to end
+
+```
+Meta Lead Testing Tool
+        ↓
+Meta fires leadgen webhook (real leadgen_id: 1035508336163452)
+        ↓
+POST /webhook/meta
+        ↓
+X-Hub-Signature-256 verified ✓
+        ↓
+leadgen_id extracted ✓
+        ↓
+Graph API: GET /v26.0/1035508336163452 ✓
+        ↓
+field_data returned ✓
+        ↓
+Normalized Lead { id, name, email, phone, createdAt } ✓
+        ↓
+io.emit('new-lead', lead) → 3 clients ✓
+        ↓
+Phone: lead card visible without device interaction ✓
+```
+
+This is the exact behavior the assignment requires.
+
+### 25.5 — Note on old lead retrieval failure
+
+A second webhook event was delivered for leadgen_id `2620683218359444` — from
+an old form that was already deleted. The Graph API returned a 404 error for it.
+The error was caught and logged gracefully — the server continued running.
+This is expected behavior: deleted test leads cannot be retrieved, and the
+error handling in meta/index.js handled it correctly.
+
+---
+
 *This file is updated at the end of every new phase.*

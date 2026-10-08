@@ -37,12 +37,12 @@ const router = express.Router();
 const crypto = require('crypto');
 
 // ─────────────────────────────────────────────────────────────────────────────
-// IMPORT META API CLIENT AND LEAD NORMALIZER
+// IMPORT META API CLIENT, LEAD NORMALIZER, AND REALTIME PUBLISHER
 // ─────────────────────────────────────────────────────────────────────────────
 // WHY these are imported here:
-// We created meta/index.js (Phase 19) and leads/index.js (Phase 20) as
-// separate modules. Now that we have a real leadgen_id from the webhook,
-// we wire them in here to complete the pipeline:
+// We created meta/index.js (Phase 19), leads/index.js (Phase 20), and
+// realtime/index.js (Phase 23) as separate modules. Now we wire all three
+// into the webhook handler to complete the full pipeline:
 //
 //   leadgen_id (from webhook)
 //         ↓
@@ -50,9 +50,17 @@ const crypto = require('crypto');
 //         ↓
 //   normalizeLead() — maps Meta fields to our application Lead model
 //         ↓
-//   normalized Lead object (ready for Socket.IO emission in next phase)
+//   publishLead() — emits the Lead to all connected Socket.IO clients
+//         ↓
+//   React Native app receives "new-lead" event
+//
+// WHY realtime/index.js does not create io itself:
+// io is created in server.js. The realtime module receives it via init(io)
+// which is called from server.js right after io is created.
+// This avoids a circular dependency (server → realtime → server).
 const { retrieveLead } = require('../meta');
 const { normalizeLead } = require('../leads');
+const { publishLead } = require('../realtime');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // RAW BODY MIDDLEWARE — for this router only
@@ -332,13 +340,24 @@ router.post('/', (req, res) => {
                     console.log('  email:     ', lead.email);
                     console.log('  phone:     ', lead.phone || '(not provided)');
                     console.log('  createdAt: ', lead.createdAt);
-                    console.log('  → Ready for Socket.IO emission (next phase)');
 
-                    // ── PLACEHOLDER for Socket.IO emission ────────────────
-                    // In the next feature (feat/meta-lead-to-realtime), we will:
-                    //   io.emit('new-lead', lead)
-                    // That will send the lead to the already-open React Native app.
-                    // For now, we confirm the full retrieve + normalize pipeline works.
+                    // ── STEP 8: Emit via Socket.IO ────────────────────────
+                    // WHY this is here:
+                    // realtime/index.js (Phase 23) was created to own the
+                    // responsibility of emitting leads to connected clients.
+                    // server.js called realtime.init(io) after creating io,
+                    // so publishLead() now has access to the io instance.
+                    //
+                    // publishLead() calls io.emit('new-lead', lead) which
+                    // sends the normalized Lead object to every connected
+                    // Socket.IO client — including the already-open React
+                    // Native app running mobile/src/app/index.tsx.
+                    //
+                    // The React Native screen listens for exactly 'new-lead':
+                    //   socket.on('new-lead', onNewLead)
+                    // When it receives it, it prepends the lead to the list
+                    // and re-renders — no manual device interaction needed.
+                    publishLead(lead);
 
                 } catch (err) {
                     // Log the error clearly so it's diagnosable from the terminal.

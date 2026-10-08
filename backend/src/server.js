@@ -101,13 +101,31 @@ const httpServer = http.createServer(app);
 // for production.
 //
 // This "io" object is used in two places below:
-//   - Step 10: to detect when clients connect/disconnect
-//   - Step 9:  to emit "new-lead" events to all connected clients
+//   - Step 11: to detect when clients connect/disconnect
+//   - Step 10: to emit "new-lead" events via the realtime publisher
 const io = new Server(httpServer, {
     cors: {
         origin: '*',
     },
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 6b — Initialize the realtime publisher with the io instance
+// ─────────────────────────────────────────────────────────────────────────────
+// WHY this is here immediately after io is created:
+// realtime/index.js owns the responsibility of emitting Socket.IO events.
+// It needs a reference to the io instance to do that.
+// We pass io to it here via init() — this is called dependency injection.
+//
+// WHY we don't require('./realtime') at the top of the file and call init() later:
+// The io variable doesn't exist until this point in the file. We need io to be
+// created first (Step 6), then immediately give it to the realtime module.
+// Putting the require and init() together here makes the dependency clear.
+//
+// After this call, webhook/index.js can call publishLead(lead) at any time
+// and the realtime module will use this io instance to emit the event.
+const realtime = require('./realtime');
+realtime.init(io);
 
 
 // ─────────────────────────────────────────────────────────────────────────────
