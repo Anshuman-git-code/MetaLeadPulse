@@ -123,9 +123,22 @@ const io = new Server(httpServer, {
 // Without this line:
 //   req.body would be undefined everywhere.
 //
-// This must be registered with app.use() BEFORE any route that reads req.body,
-// which is why it comes here before /test/lead and /webhook.
-app.use(express.json());
+// WHY we exclude /webhook/meta from this middleware:
+// Meta's webhook POST includes an X-Hub-Signature-256 header — an HMAC
+// signature of the RAW request body. To verify that signature, we need
+// access to the exact raw bytes Meta sent us.
+// If express.json() runs first on /webhook/meta, it consumes the raw body
+// and replaces it with a parsed object — the raw bytes are gone, and we
+// can no longer verify the signature.
+// So we tell express.json() to skip /webhook/meta using a path exclusion.
+// The webhook router handles its own body parsing with express.raw() instead.
+app.use((req, res, next) => {
+    if (req.path.startsWith('/webhook/meta')) {
+        // Skip JSON parsing for webhook routes — they handle their own body
+        return next();
+    }
+    express.json()(req, res, next);
+});
 
 
 // ─────────────────────────────────────────────────────────────────────────────

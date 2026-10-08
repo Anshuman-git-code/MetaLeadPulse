@@ -767,4 +767,104 @@ dashboard setup — this handler is ready for that.
 
 ---
 
+## Phase 9 — Webhook Event Receiver (POST /webhook/meta)
+
+### 9.1 — The raw body problem and why it matters
+
+Before writing the POST handler, one important technical issue had to be solved.
+
+`express.json()` (Step 7 in server.js) reads and parses the request body into
+a JavaScript object. Once parsed, the original raw bytes are gone.
+
+Meta's webhook POST includes an `X-Hub-Signature-256` header — an HMAC-SHA256
+signature of the **raw bytes** of the request body. To verify it, we need those
+exact raw bytes. If express.json() runs first, the raw bytes are gone and we
+can never verify the signature.
+
+**Solution:** changed Step 7 in server.js to skip `/webhook/meta` routes,
+and added `express.raw({ type: '*/*' })` inside the webhook router itself.
+This means:
+- All other routes (like `/test/lead`) still get parsed JSON via express.json()
+- Webhook routes get the raw Buffer body via express.raw()
+
+### 9.2 — Modified server.js Step 7
+
+Changed from:
+```js
+app.use(express.json());
+```
+
+To a conditional middleware that skips /webhook/meta:
+```js
+app.use((req, res, next) => {
+    if (req.path.startsWith('/webhook/meta')) {
+        return next();
+    }
+    express.json()(req, res, next);
+});
+```
+
+### 9.3 — Added to webhook/index.js
+
+Two additions to `backend/src/webhook/index.js`:
+
+**1. crypto import** — Node.js built-in module for HMAC signature verification.
+No install needed.
+
+**2. express.raw() middleware** — applied only to this router, preserves raw
+body as a Buffer for signature verification.
+
+**3. POST '/' handler** — processes incoming Meta lead events.
+
+**What the POST handler does, in order:**
+
+```
+1. res.sendStatus(200) immediately
+        ↓ Meta gets its response fast, won't retry
+2. Read X-Hub-Signature-256 header
+        ↓
+3. Compute HMAC-SHA256 of raw body using META_APP_SECRET
+        ↓
+4. Compare using crypto.timingSafeEqual (constant-time comparison)
+        ↓ mismatch → log warning + return
+5. JSON.parse(req.body.toString()) → payload object
+        ↓
+6. Check payload.object === 'page'
+        ↓
+7. Loop through entry[].changes[]
+        ↓
+8. Filter for change.field === 'leadgen'
+        ↓
+9. Extract leadgen_id, page_id, form_id, created_time
+        ↓
+10. Log the identifiers
+        ↓
+11. Placeholder comment for Graph API call (next phase)
+```
+
+### 9.4 — Tested locally with curl
+
+**Test 1 — Valid signature:**
+Computed correct HMAC-SHA256 signature using META_APP_SECRET, sent with request.
+- HTTP status: `200` ✓
+- Backend logged: `leadgen_id`, `page_id`, `form_id`, `created_time` ✓
+
+**Test 2 — Wrong signature:**
+Sent `sha256=wrongsignature`.
+- HTTP status: `200` (Meta still gets 200 — we don't fail the HTTP response)
+- Backend logged: `Webhook POST signature mismatch — ignoring request` ✓
+
+**Test 3 — No signature (local dev curl without header):**
+- HTTP status: `200`
+- Backend logged: `Webhook POST received without X-Hub-Signature-256 header` ✓
+
+**Test 4 — /health still works:**
+- HTTP status: `200` ✓
+
+**Test 5 — /test/lead still works:**
+- HTTP status: `201` ✓
+- Confirmed existing routes were not broken by the body parsing change
+
+---
+
 *This file is updated at the end of every new phase.*
