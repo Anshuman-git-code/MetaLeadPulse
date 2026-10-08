@@ -867,4 +867,68 @@ Sent `sha256=wrongsignature`.
 
 ---
 
+## Phase 10 — Wire Webhook Router into server.js and Full Route Verification
+
+### 10.1 — What was already in place
+
+The webhook router was mounted in server.js during Phase 8 as Step 9:
+```js
+const webhookRouter = require('./webhook');
+app.use('/webhook/meta', webhookRouter);
+```
+
+This means Phase 10's primary job is to verify that all routes — old and new —
+work correctly together after all the changes made in Phases 8 and 9.
+
+### 10.2 — Full route verification
+
+Started the server and tested every route in sequence:
+
+| Route | Method | Expected | Result |
+|---|---|---|---|
+| `/health` | GET | `{"status":"ok"}` | ✓ |
+| `/webhook/meta` | GET (correct token) | `CHALLENGE_123` echoed back | ✓ |
+| `/webhook/meta` | GET (wrong token) | `403` | ✓ |
+| `/webhook/meta` | POST (valid signature + leadgen payload) | `200`, lead identifiers logged | ✓ |
+| `/test/lead` | POST | `201`, lead emitted | ✓ |
+
+### 10.3 — Backend terminal output confirmed
+
+```
+Webhook verification successful — challenge returned
+Webhook verification failed — token mismatch
+Lead event received:
+  leadgen_id:    987654321
+  page_id:       123456789
+  form_id:       111222333
+  created_time:  1728259200
+  → Ready for Graph API retrieval (next phase)
+Test lead received: { id: 'test-...', name: 'Arjun', ... }
+New lead emitted to 0 client(s)
+```
+
+No route conflicts. Body parsing works correctly for each route type:
+- `/webhook/meta` receives raw Buffer → signature verified → JSON parsed manually
+- `/test/lead` receives parsed JSON object via express.json()
+
+### 10.4 — About META_PAGE_ID and META_PAGE_ACCESS_TOKEN
+
+These two variables are still placeholders in `.env`. They are not needed
+until the Graph API call phase. How to get them:
+
+**META_PAGE_ID:**
+Go to `developers.facebook.com/tools/explorer/` → run `me/accounts` → copy
+the `id` value of the page associated with the Lead Form.
+
+**META_PAGE_ACCESS_TOKEN:**
+Same Graph API Explorer → select your app → Generate Access Token → grant
+permissions (`leads_retrieval`, `pages_manage_metadata`, `pages_show_list`,
+`pages_read_engagement`, `ads_management`) → switch dropdown from User to
+your Page → copy the `EAA...` token shown.
+
+Note: this is a short-lived token (~1 hour). Regenerate it right before
+recording the demo Loom. Long-lived token exchange can be done later if needed.
+
+---
+
 *This file is updated at the end of every new phase.*
