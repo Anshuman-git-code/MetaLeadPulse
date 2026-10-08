@@ -37,6 +37,24 @@ const router = express.Router();
 const crypto = require('crypto');
 
 // ─────────────────────────────────────────────────────────────────────────────
+// IMPORT META API CLIENT AND LEAD NORMALIZER
+// ─────────────────────────────────────────────────────────────────────────────
+// WHY these are imported here:
+// We created meta/index.js (Phase 19) and leads/index.js (Phase 20) as
+// separate modules. Now that we have a real leadgen_id from the webhook,
+// we wire them in here to complete the pipeline:
+//
+//   leadgen_id (from webhook)
+//         ↓
+//   retrieveLead() — calls Meta Graph API, returns raw field_data
+//         ↓
+//   normalizeLead() — maps Meta fields to our application Lead model
+//         ↓
+//   normalized Lead object (ready for Socket.IO emission in next phase)
+const { retrieveLead } = require('../meta');
+const { normalizeLead } = require('../leads');
+
+// ─────────────────────────────────────────────────────────────────────────────
 // RAW BODY MIDDLEWARE — for this router only
 // ─────────────────────────────────────────────────────────────────────────────
 // express.raw() reads the request body as a raw Buffer (raw bytes),
@@ -279,13 +297,59 @@ router.post('/', (req, res) => {
             console.log('  created_time: ', created_time);
             console.log('  → Ready for Graph API retrieval (next phase)');
 
-            // ── STEP 7: Placeholder for Graph API call ────────────────────
-            // In the next feature (feat/meta-graph-api), we will:
-            //   1. Use leadgen_id to call GET graph.facebook.com/<leadgen_id>
-            //   2. Get back the field_data (name, email, phone)
-            //   3. Normalize it into our Lead model
-            //   4. Emit it via Socket.IO to the React Native app
-            // For now, we just confirm the event was received and parsed.
+            // ── STEP 7: Retrieve lead from Meta Graph API and normalize ──
+            // WHY this is here:
+            // We now have meta/index.js (retrieveLead) and leads/index.js
+            // (normalizeLead) ready. The leadgen_id from the webhook is
+            // the key we need to fetch the actual lead data from Meta.
+            //
+            // WHY async IIFE (immediately invoked function expression):
+            // forEach callbacks cannot be async directly in a way that
+            // propagates errors cleanly. We wrap the async work in an
+            // immediately-invoked async function so we can use await
+            // inside the forEach loop.
+            //
+            // WHY we don't await the forEach itself:
+            // The 200 response was already sent to Meta in Step 1.
+            // This processing happens after the response — Meta doesn't
+            // wait for it. So using an async IIFE here is correct.
+            (async () => {
+                try {
+                    // Call Meta Graph API with the leadgen_id.
+                    // Returns raw response: { id, created_time, field_data }
+                    const rawLead = await retrieveLead(leadgen_id);
+
+                    // Transform Meta's field_data into our application Lead model:
+                    // { id, name, email, phone, createdAt }
+                    const lead = normalizeLead(rawLead);
+
+                    // Log the normalized lead so we can confirm it during testing.
+                    // We log name and email only — not the full object — to avoid
+                    // printing sensitive personal data unnecessarily.
+                    console.log('Normalized lead ready:');
+                    console.log('  id:        ', lead.id);
+                    console.log('  name:      ', lead.name);
+                    console.log('  email:     ', lead.email);
+                    console.log('  phone:     ', lead.phone || '(not provided)');
+                    console.log('  createdAt: ', lead.createdAt);
+                    console.log('  → Ready for Socket.IO emission (next phase)');
+
+                    // ── PLACEHOLDER for Socket.IO emission ────────────────
+                    // In the next feature (feat/meta-lead-to-realtime), we will:
+                    //   io.emit('new-lead', lead)
+                    // That will send the lead to the already-open React Native app.
+                    // For now, we confirm the full retrieve + normalize pipeline works.
+
+                } catch (err) {
+                    // Log the error clearly so it's diagnosable from the terminal.
+                    // Common causes:
+                    //   - expired Page Access Token
+                    //   - invalid leadgen_id (e.g. dummy 444444444444 from Test button)
+                    //   - missing permission on the token
+                    //   - Meta API temporarily unavailable
+                    console.error('Failed to retrieve or normalize lead:', err.message);
+                }
+            })();
         });
     });
 });
