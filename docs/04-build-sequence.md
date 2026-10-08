@@ -1137,4 +1137,416 @@ curl -X POST http://localhost:3001/test/lead \
 
 ---
 
+## Phase 12 — Branch Preparation
+
+### 12.1 — Pulled updated main from GitHub
+
+PR #6 (feat/meta-webhook) was already merged on GitHub but had not been
+pulled locally. Running:
+
+```bash
+git switch main
+git pull origin main
+```
+
+Pulled 6 files into local main:
+- `backend/.env.example`
+- `backend/package.json` (dotenv added)
+- `backend/package-lock.json`
+- `backend/src/server.js` (webhook router mounted, body parsing updated)
+- `backend/src/webhook/index.js` (GET verification + POST event handler)
+- `docs/04-build-sequence.md` (Phases 7–11)
+
+### 12.2 — Rebased feat/meta-webhook-connect onto main
+
+`feat/meta-webhook-connect` was created before the merge, so it was sitting
+on the old main without any webhook code. Fixed by rebasing:
+
+```bash
+git switch feat/meta-webhook-connect
+git rebase main
+```
+
+Rebase succeeded with no conflicts. The branch now starts from the
+merged webhook code.
+
+### 12.3 — Verified all existing routes work on the new branch
+
+Started backend and ran four checks:
+
+| Route | Result |
+|---|---|
+| GET /health | 200 ✓ |
+| GET /webhook/meta (correct token) | challenge echoed back ✓ |
+| GET /webhook/meta (wrong token) | 403 ✓ |
+| POST /test/lead | 201 ✓ |
+
+Known-good baseline confirmed. Ready to add the public tunnel.
+
+---
+
+## Phase 13 — ngrok Tunnel Setup
+
+### 13.1 — Installed ngrok via Homebrew
+
+```bash
+brew install ngrok/ngrok/ngrok
+```
+
+Installed version: `3.39.11`
+
+### 13.2 — Created a free ngrok account and added authtoken
+
+ngrok requires a free account to keep tunnels alive.
+
+1. Signed up at `https://dashboard.ngrok.com/signup`
+2. Copied the authtoken from `https://dashboard.ngrok.com/get-started/your-authtoken`
+3. Ran:
+```bash
+ngrok config add-authtoken <token>
+```
+Saved to: `/Users/anshumanmohapatra/Library/Application Support/ngrok/ngrok.yml`
+
+### 13.3 — Started the tunnel
+
+With the backend already running on port 3001:
+
+```bash
+ngrok http 3001
+```
+
+ngrok output:
+```
+Session Status    online
+Account           Anshuman (Plan: Free)
+Version           3.39.11
+Region            India (in)
+Forwarding        https://a52e-2401-4900-8fd3-bfb0-2513-c96-df1f-cec9.ngrok-free.app -> http://localhost:3001
+```
+
+### 13.4 — Verified tunnel reaches backend
+
+```bash
+curl -s https://a52e-2401-4900-8fd3-bfb0-2513-c96-df1f-cec9.ngrok-free.app/health
+```
+Response: `{"status":"ok"}` ✓
+
+The public HTTPS URL is now routing to `localhost:3001` correctly.
+
+### 13.5 — Important notes about ngrok free tier
+
+- The URL changes every time ngrok restarts. If the tunnel is stopped and
+  restarted, a new URL is generated and the Meta Dashboard callback URL
+  must be updated.
+- Keep both the backend (`npm start`) and ngrok (`ngrok http 3001`) running
+  at all times during testing.
+- The ngrok web interface at `http://127.0.0.1:4040` shows all incoming
+  requests in real time — useful for debugging.
+
+### 13.6 — Webhook callback URL for Meta Dashboard
+
+```
+https://a52e-2401-4900-8fd3-bfb0-2513-c96-df1f-cec9.ngrok-free.app/webhook/meta
+```
+
+This is what gets entered in the Meta Developer App in Phase 14.
+
+---
+
+## Phase 14 — Meta Developer App Webhook Configuration
+
+### 14.1 — First app type was wrong (LeadPulse — Business/Marketing API)
+
+The original app (LeadPulse, App ID: 1884323179644593) was created as a
+Business/Marketing API app. This app type does not expose the Webhooks product
+in the sidebar or `pages_manage_metadata` in Graph API Explorer. After multiple
+attempts to configure webhooks through that app, it was determined to be the
+wrong app type for Lead Ads webhook integration.
+
+### 14.2 — Created a new app: LeadPulse2
+
+At `developers.facebook.com/apps/creation/`:
+- Selected **"Others"** in the use cases filter
+- Chose a generic use case (not Marketing API)
+- Named the app **LeadPulse2**
+- App ID: `1079728714832697`
+- App type: Business
+
+This app type shows **Webhooks** as an available product in the sidebar.
+
+### 14.3 — Added Webhooks product
+
+Clicked **"Set up"** next to Webhooks in the Available Products list.
+
+### 14.4 — Configured the webhook callback
+
+In Webhooks → Page:
+- **Callback URL:**
+  `https://a52e-2401-4900-8fd3-bfb0-2513-c96-df1f-cec9.ngrok-free.app/webhook/meta`
+- **Verify Token:** value of `META_VERIFY_TOKEN` from `.env`
+- Clicked **"Verify and Save"**
+
+Backend terminal confirmed:
+```
+Webhook verification request received
+  hub.verify_token received: YES
+Webhook verification successful — challenge returned
+```
+
+Meta confirmed with: `{ "success": true }`
+
+### 14.5 — Subscribed the leadgen field
+
+Scrolled down the webhook fields list, found `leadgen`, toggled it to **Subscribed**.
+
+### 14.6 — Updated META_APP_SECRET in .env
+
+Signature verification was failing with `Webhook POST signature mismatch` because
+`.env` still had the old LeadPulse app secret. Updated `META_APP_SECRET` with
+LeadPulse2's App Secret from:
+`developers.facebook.com/apps/1079728714832697/settings/basic/`
+
+After restart, the dashboard Test button confirmed:
+```
+Webhook POST received — object type: page
+Lead event received:
+  leadgen_id:    444444444444   ← dummy data from Test button
+  → Ready for Graph API retrieval (next phase)
+```
+
+---
+
+## Phase 15 — Subscribe Page to leadgen Events
+
+### 15.1 — First attempt failed — wrong permissions
+
+Attempted Page subscription via Graph API Explorer with existing token.
+Error: `"(#200) To subscribe to the leadgen field, one of these permissions is needed: leads_retrieval"`
+
+The original app type did not expose `leads_retrieval` in the Explorer because
+it requires App Review. LeadPulse2 handles this differently.
+
+### 15.2 — Generated Page Access Token for LeadPulse2
+
+In Graph API Explorer:
+1. Selected **LeadPulse2** in Meta App dropdown
+2. Clicked **Generate Access Token** → accepted permissions
+3. Switched **"User or Page"** dropdown to **"Meta Lead Pulse Test"**
+4. Copied the resulting Page Access Token (`EAA...`)
+
+### 15.3 — Subscribed Page via terminal
+
+```bash
+curl -s -X POST \
+"https://graph.facebook.com/<PAGE_ID>/subscribed_apps?subscribed_fields=leadgen&access_token=<PAGE_TOKEN>"
+```
+
+Response: `{ "success": true }`
+
+Verified subscription:
+```json
+{
+  "data": [{
+    "name": "LeadPulse2",
+    "id": "1079728714832697",
+    "subscribed_fields": ["leadgen"]
+  }]
+}
+```
+
+### 15.4 — Token expiry issue
+
+Short-lived Page tokens expire in ~1-2 hours. The subscription kept breaking
+because the token expired. Fixed by generating a **long-lived Page token**:
+
+```bash
+curl -s "https://graph.facebook.com/oauth/access_token?\
+grant_type=fb_exchange_token&\
+client_id=1079728714832697&\
+client_secret=<APP_SECRET>&\
+fb_exchange_token=<SHORT_LIVED_TOKEN>"
+```
+
+The response contains a token that lasts 60 days. Updated `META_PAGE_ACCESS_TOKEN`
+in `.env` with this long-lived token. Re-subscribed the Page with the new token.
+
+---
+
+## Phase 16 — Live Test with Meta Lead Testing Tool
+
+### 16.1 — App was in Development mode — blocked real delivery
+
+The Lead Testing Tool showed status **"Pending"** and never delivered real events.
+The Webhooks dashboard showed a red warning:
+
+> "Apps will only be able to receive test webhooks sent from the dashboard while
+> the app is unpublished. No production data, including from app admins,
+> developers or testers, will be delivered unless the app has been published."
+
+### 16.2 — Added Privacy Policy URL and switched to Live mode
+
+To switch to Live mode, Meta required a valid Privacy Policy URL.
+
+In App Settings → Basic:
+- Added Privacy Policy URL: `https://github.com/Anshuman-git-code/MetaLeadPulse`
+- Added App Domains: `ngrok-free.app`
+- Clicked Save Changes
+
+Then toggled **App Mode: Development → Live**. The app switched to Live mode.
+
+### 16.3 — Real lead event received
+
+Went to `developers.facebook.com/tools/lead-ads-testing`:
+- Selected **Meta Lead Pulse Test** page
+- Selected **Untitled form 08/10/2026, 08:52**
+- Deleted existing test lead
+- Clicked **"Create Lead"**
+
+Backend terminal immediately showed:
+```
+Webhook POST received — object type: page
+Lead event received:
+  leadgen_id:    780674821807675
+  page_id:       1406252395897553
+  form_id:       1109972768108341
+  created_time:  1791447643
+  → Ready for Graph API retrieval (next phase)
+```
+
+Lead Testing Tool confirmed:
+```
+Status: Success
+Successful webhook integration
+```
+
+Real IDs confirmed — not dummy `444444444444` values. The full pipeline
+from Meta Lead Testing Tool to backend is working end to end.
+
+### 16.4 — What the complete flow looks like now
+
+```
+Meta Lead Testing Tool
+        ↓
+Meta creates organic test lead
+        ↓
+Meta fires leadgen webhook event
+        ↓
+https://<ngrok-url>/webhook/meta
+        ↓
+X-Hub-Signature-256 verified (LeadPulse2 App Secret)
+        ↓
+payload parsed
+        ↓
+leadgen event extracted
+        ↓
+leadgen_id: 780674821807675 logged
+        ↓
+→ Ready for Graph API retrieval (next feature)
+```
+
+---
+
+## Phase 17 — Documentation and Commit
+
+### 17.1 — Updated docs/04-build-sequence.md
+
+Added Phases 14–17 covering:
+- Wrong app type diagnosis and new app creation
+- Webhook configuration and verification
+- Page subscription and token management
+- App mode switch to Live
+- Real lead event delivery confirmation
+
+### 17.2 — Updated backend/.env
+
+Changes made to `.env` during this feature:
+- `META_APP_ID` — updated to LeadPulse2 App ID (`1079728714832697`)
+- `META_APP_SECRET` — updated to LeadPulse2 App Secret
+- `META_PAGE_ID` — corrected to actual Page ID (`1406252395897553`)
+- `META_PAGE_ACCESS_TOKEN` — replaced with long-lived Page token (60 days)
+
+### 17.3 — Important notes for next session
+
+- ngrok URL changes every restart — update webhook callback URL in Meta dashboard
+  and re-run the Page subscription command when restarting
+- Long-lived token lasts ~60 days — regenerate before expiry
+- App is now in **Live mode** — real lead events will be delivered
+- LeadPulse2 (not the original LeadPulse) is the active app for this integration
+
+---
+
+## Current State of the Project
+
+### Files created or modified across all phases
+
+```
+MetaLeadPulse/
+├── .gitignore
+├── README.md
+├── docs/
+│   ├── 01-problem-understanding.md
+│   ├── 02-meta-integration-research.md
+│   ├── 03-architecture.md
+│   ├── 04-build-sequence.md          ← this file
+│   └── decisions/
+│       ├── 001-realtime-communication.md
+│       └── 002-no-persistent-storage.md
+├── backend/
+│   ├── .env                          (not committed — contains secrets)
+│   ├── .env.example                  (committed — variable names only)
+│   ├── package.json                  (express + socket.io + dotenv)
+│   └── src/
+│       ├── server.js                 (steps 1–12, webhook router mounted)
+│       └── webhook/
+│           └── index.js              (GET verification + POST event handler)
+└── mobile/
+    └── src/
+        ├── app/
+        │   └── index.tsx             (Leads screen)
+        └── services/
+            └── socket.ts             (Socket.IO client)
+```
+
+### How to run the current state from scratch
+
+**Terminal 1 — Backend:**
+```bash
+cd MetaLeadPulse/backend
+npm install        # only needed first time
+npm start
+```
+
+**Terminal 2 — ngrok tunnel:**
+```bash
+ngrok http 3001
+```
+Copy the new `https://` URL. Update in:
+1. Meta Developer Dashboard → LeadPulse2 → Webhooks → Page → Edit callback URL
+2. Re-run Page subscription:
+```bash
+curl -X POST \
+"https://graph.facebook.com/1406252395897553/subscribed_apps?subscribed_fields=leadgen&access_token=<META_PAGE_ACCESS_TOKEN>"
+```
+
+**Terminal 3 — Mobile (optional):**
+```bash
+cd MetaLeadPulse/mobile
+npx expo start
+```
+
+**Test with Meta Lead Testing Tool:**
+```
+https://developers.facebook.com/tools/lead-ads-testing
+```
+Select Meta Lead Pulse Test page → delete existing lead → create lead →
+watch backend terminal for `leadgen_id`.
+
+### What is not done yet
+
+- Graph API call using `leadgen_id` to retrieve actual lead data (name, email, phone)
+- Socket.IO emit of real Meta lead to React Native
+- End-to-end: Meta Lead Testing Tool → lead appears in app without device interaction
+
+---
+
 *This file is updated at the end of every new phase.*
