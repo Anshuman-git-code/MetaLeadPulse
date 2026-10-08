@@ -1,4 +1,16 @@
 // ─────────────────────────────────────────────────────────────────────────────
+// LOAD ENVIRONMENT VARIABLES — must be the very first thing that runs
+// ─────────────────────────────────────────────────────────────────────────────
+// dotenv reads the .env file and loads every variable into process.env.
+// It must run before any other code so that all later require() calls and
+// config references can access process.env.META_VERIFY_TOKEN etc.
+//
+// require('dotenv').config() is the standard one-liner for this.
+// If .env does not exist (e.g. in CI), dotenv silently does nothing —
+// the variables would then come from the real environment instead.
+require('dotenv').config();
+
+// ─────────────────────────────────────────────────────────────────────────────
 // server.js — The entry point for the entire backend.
 //
 // This file starts the HTTP server, connects Express (routing) and
@@ -111,9 +123,22 @@ const io = new Server(httpServer, {
 // Without this line:
 //   req.body would be undefined everywhere.
 //
-// This must be registered with app.use() BEFORE any route that reads req.body,
-// which is why it comes here before /test/lead and /webhook.
-app.use(express.json());
+// WHY we exclude /webhook/meta from this middleware:
+// Meta's webhook POST includes an X-Hub-Signature-256 header — an HMAC
+// signature of the RAW request body. To verify that signature, we need
+// access to the exact raw bytes Meta sent us.
+// If express.json() runs first on /webhook/meta, it consumes the raw body
+// and replaces it with a parsed object — the raw bytes are gone, and we
+// can no longer verify the signature.
+// So we tell express.json() to skip /webhook/meta using a path exclusion.
+// The webhook router handles its own body parsing with express.raw() instead.
+app.use((req, res, next) => {
+    if (req.path.startsWith('/webhook/meta')) {
+        // Skip JSON parsing for webhook routes — they handle their own body
+        return next();
+    }
+    express.json()(req, res, next);
+});
 
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -136,7 +161,24 @@ app.get('/health', (req, res) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 9 — Development test route: POST /test/lead
+// STEP 9 — Mount the Meta webhook router
+// ─────────────────────────────────────────────────────────────────────────────
+// WHY this is here:
+// We created backend/src/webhook/index.js which defines all Meta webhook
+// routes. We import that router here and mount it at '/webhook/meta'.
+//
+// What this means:
+//   router.get('/')  inside webhook/index.js → GET  /webhook/meta
+//   router.post('/') inside webhook/index.js → POST /webhook/meta  (Phase 9)
+//
+// Keeping webhook logic in its own file means server.js stays clean.
+// It just says "anything at /webhook/meta is handled by this module."
+const webhookRouter = require('./webhook');
+app.use('/webhook/meta', webhookRouter);
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// STEP 10 — Development test route: POST /test/lead
 // ─────────────────────────────────────────────────────────────────────────────
 // WHY this route exists here:
 // We wrote mobile/src/app/index.tsx which listens for a "new-lead" event
@@ -201,7 +243,7 @@ app.post('/test/lead', (req, res) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 10 — Listen for Socket.IO client connections
+// STEP 11 — Listen for Socket.IO client connections
 // ─────────────────────────────────────────────────────────────────────────────
 // WHY this block is here:
 // mobile/src/services/socket.ts creates a Socket.IO client and connects to
@@ -232,7 +274,7 @@ io.on('connection', (socket) => {
 
 
 // ─────────────────────────────────────────────────────────────────────────────
-// STEP 11 — Define the port and start listening
+// STEP 12 — Define the port and start listening
 // ─────────────────────────────────────────────────────────────────────────────
 // Everything above just sets up the configuration. Nothing actually runs until
 // httpServer.listen() is called here. This is the line that opens the port

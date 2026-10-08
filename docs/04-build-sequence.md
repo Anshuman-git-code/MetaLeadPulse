@@ -569,4 +569,572 @@ curl -X POST http://localhost:3001/test/lead \
 
 ---
 
+---
+
+## Phase 7 — Branch and Environment Setup
+
+### 7.1 — Created the feature branch
+
+Branch created from `main`:
+```bash
+git switch main
+git pull origin main
+git switch -c feat/meta-webhook
+```
+
+All work for the Meta webhook issue happens on this branch.
+
+### 7.2 — Created backend/.env
+
+File created: `backend/.env` (not committed — covered by .gitignore)
+
+Contains the five Meta environment variables the integration needs:
+```
+META_APP_ID=          ← numeric App ID from Meta Developer Dashboard
+META_APP_SECRET=      ← App Secret, used for webhook signature verification
+META_VERIFY_TOKEN=    ← a random string you choose, entered in Meta dashboard too
+META_PAGE_ID=         ← numeric Facebook Page ID (to be filled in)
+META_PAGE_ACCESS_TOKEN= ← Page token with lead permissions (to be filled in)
+```
+
+`META_PAGE_ID` and `META_PAGE_ACCESS_TOKEN` are needed later for Graph API
+calls (Phase 13+). They are not required for Phase 8 or 9.
+
+### 7.3 — Created backend/.env.example
+
+File created: `backend/.env.example` (committed to Git)
+
+Same variable names as `.env` but with empty values and comments explaining
+what each variable is and where to find it. This is the file another developer
+would copy and fill in when setting up the project locally.
+
+### 7.4 — Installed dotenv
+
+```bash
+cd backend
+npm install dotenv
+```
+
+`dotenv` is a package that reads the `.env` file and loads every variable
+into `process.env` so our code can access them as `process.env.META_VERIFY_TOKEN` etc.
+
+After install, `backend/package.json` dependencies became:
+```json
+"dependencies": {
+  "dotenv": "^16.x.x",
+  "express": "^5.2.1",
+  "socket.io": "^4.8.4"
+}
+```
+
+### 7.5 — Loaded dotenv at the top of server.js
+
+Modified: `backend/src/server.js`
+
+Added as the very first line before any other require():
+```js
+require('dotenv').config();
+```
+
+Why first: every other module that runs after this can safely read
+`process.env.*`. If dotenv runs after other requires, those modules
+would see undefined for all Meta variables.
+
+### 7.6 — Verified environment variables load correctly
+
+Ran a quick Node check:
+```bash
+node --input-type=commonjs << 'EOF'
+require('dotenv').config();
+console.log('META_VERIFY_TOKEN loaded:', process.env.META_VERIFY_TOKEN ? 'YES' : 'NO');
+console.log('META_APP_SECRET loaded:', process.env.META_APP_SECRET ? 'YES' : 'NO');
+console.log('META_APP_ID loaded:', process.env.META_APP_ID ? 'YES' : 'NO');
+EOF
+```
+
+Output confirmed all three active variables load correctly:
+```
+META_VERIFY_TOKEN loaded: YES
+META_APP_SECRET loaded: YES
+META_APP_ID loaded: YES
+```
+
+---
+
+## Phase 8 — Webhook Verification (GET /webhook/meta)
+
+### 8.1 — Created the webhook module folder
+
+```bash
+mkdir backend/src/webhook
+```
+
+This is the start of the folder structure planned in docs/03-architecture.md Section 9:
+```
+backend/src/
+  ├── webhook/    ← receive and verify inbound Meta events
+  ├── meta/       ← (later) Graph API client
+  ├── leads/      ← (later) normalization
+  └── realtime/   ← (later) Socket.IO
+```
+
+### 8.2 — Created backend/src/webhook/index.js
+
+File created: `backend/src/webhook/index.js`
+
+This file exports an Express Router. It handles all Meta webhook routes.
+Separating it from server.js keeps Meta-specific logic in one place.
+
+**What the GET handler does:**
+
+Meta's webhook verification works like this:
+```
+Meta                              Our backend
+  │                                    │
+  │  GET /webhook/meta                 │
+  │  ?hub.mode=subscribe               │
+  │  &hub.verify_token=<our_token>     │
+  │  &hub.challenge=<random_number>    │
+  │ ─────────────────────────────────► │
+  │                                    │  check: mode === 'subscribe'?
+  │                                    │  check: token === META_VERIFY_TOKEN?
+  │                                    │
+  │  ◄─────────────────────────────── │
+  │  200 + challenge value (if passed) │
+  │  403 (if failed)                   │
+```
+
+The handler:
+1. Reads `hub.mode`, `hub.verify_token`, `hub.challenge` from `req.query`
+2. Compares token against `process.env.META_VERIFY_TOKEN` (loaded from .env)
+3. If `mode === 'subscribe'` AND token matches → `res.send(challenge)` (200)
+4. If either fails → `res.sendStatus(403)`
+5. Logs the outcome (but never logs the token value itself)
+
+### 8.3 — Mounted the webhook router in server.js
+
+Modified: `backend/src/server.js`
+
+Added as Step 9 (renumbered subsequent steps):
+```js
+const webhookRouter = require('./webhook');
+app.use('/webhook/meta', webhookRouter);
+```
+
+`app.use('/webhook/meta', webhookRouter)` means:
+- Every route defined as `'/'` in `webhookRouter` becomes `/webhook/meta`
+- Every route defined as `'/something'` becomes `/webhook/meta/something`
+- server.js does not need to know the internal details of the webhook module
+
+### 8.4 — Tested verification locally with curl
+
+**Test 1 — Correct token (should return challenge with 200):**
+```bash
+curl -s "http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=<META_VERIFY_TOKEN>&\
+hub.challenge=TESTCHALLENGE123"
+```
+Result: `200` status, body: `TESTCHALLENGE123` ✓
+
+**Test 2 — Wrong token (should return 403):**
+```bash
+curl -s -o /dev/null -w "%{http_code}" \
+"http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=wrongtoken&\
+hub.challenge=TESTCHALLENGE123"
+```
+Result: `403` ✓
+
+**Backend terminal confirmed:**
+```
+Webhook verification request received
+  hub.mode: subscribe
+  hub.verify_token received: YES
+  hub.challenge: TESTCHALLENGE123
+Webhook verification successful — challenge returned
+
+Webhook verification request received
+  hub.mode: subscribe
+  hub.verify_token received: YES
+  hub.challenge: TESTCHALLENGE123
+Webhook verification failed — token mismatch
+```
+
+Both paths work correctly. Meta will use the same GET request during
+dashboard setup — this handler is ready for that.
+
+---
+
+## Phase 9 — Webhook Event Receiver (POST /webhook/meta)
+
+### 9.1 — The raw body problem and why it matters
+
+Before writing the POST handler, one important technical issue had to be solved.
+
+`express.json()` (Step 7 in server.js) reads and parses the request body into
+a JavaScript object. Once parsed, the original raw bytes are gone.
+
+Meta's webhook POST includes an `X-Hub-Signature-256` header — an HMAC-SHA256
+signature of the **raw bytes** of the request body. To verify it, we need those
+exact raw bytes. If express.json() runs first, the raw bytes are gone and we
+can never verify the signature.
+
+**Solution:** changed Step 7 in server.js to skip `/webhook/meta` routes,
+and added `express.raw({ type: '*/*' })` inside the webhook router itself.
+This means:
+- All other routes (like `/test/lead`) still get parsed JSON via express.json()
+- Webhook routes get the raw Buffer body via express.raw()
+
+### 9.2 — Modified server.js Step 7
+
+Changed from:
+```js
+app.use(express.json());
+```
+
+To a conditional middleware that skips /webhook/meta:
+```js
+app.use((req, res, next) => {
+    if (req.path.startsWith('/webhook/meta')) {
+        return next();
+    }
+    express.json()(req, res, next);
+});
+```
+
+### 9.3 — Added to webhook/index.js
+
+Two additions to `backend/src/webhook/index.js`:
+
+**1. crypto import** — Node.js built-in module for HMAC signature verification.
+No install needed.
+
+**2. express.raw() middleware** — applied only to this router, preserves raw
+body as a Buffer for signature verification.
+
+**3. POST '/' handler** — processes incoming Meta lead events.
+
+**What the POST handler does, in order:**
+
+```
+1. res.sendStatus(200) immediately
+        ↓ Meta gets its response fast, won't retry
+2. Read X-Hub-Signature-256 header
+        ↓
+3. Compute HMAC-SHA256 of raw body using META_APP_SECRET
+        ↓
+4. Compare using crypto.timingSafeEqual (constant-time comparison)
+        ↓ mismatch → log warning + return
+5. JSON.parse(req.body.toString()) → payload object
+        ↓
+6. Check payload.object === 'page'
+        ↓
+7. Loop through entry[].changes[]
+        ↓
+8. Filter for change.field === 'leadgen'
+        ↓
+9. Extract leadgen_id, page_id, form_id, created_time
+        ↓
+10. Log the identifiers
+        ↓
+11. Placeholder comment for Graph API call (next phase)
+```
+
+### 9.4 — Tested locally with curl
+
+**Test 1 — Valid signature:**
+Computed correct HMAC-SHA256 signature using META_APP_SECRET, sent with request.
+- HTTP status: `200` ✓
+- Backend logged: `leadgen_id`, `page_id`, `form_id`, `created_time` ✓
+
+**Test 2 — Wrong signature:**
+Sent `sha256=wrongsignature`.
+- HTTP status: `200` (Meta still gets 200 — we don't fail the HTTP response)
+- Backend logged: `Webhook POST signature mismatch — ignoring request` ✓
+
+**Test 3 — No signature (local dev curl without header):**
+- HTTP status: `200`
+- Backend logged: `Webhook POST received without X-Hub-Signature-256 header` ✓
+
+**Test 4 — /health still works:**
+- HTTP status: `200` ✓
+
+**Test 5 — /test/lead still works:**
+- HTTP status: `201` ✓
+- Confirmed existing routes were not broken by the body parsing change
+
+---
+
+## Phase 10 — Wire Webhook Router into server.js and Full Route Verification
+
+### 10.1 — What was already in place
+
+The webhook router was mounted in server.js during Phase 8 as Step 9:
+```js
+const webhookRouter = require('./webhook');
+app.use('/webhook/meta', webhookRouter);
+```
+
+This means Phase 10's primary job is to verify that all routes — old and new —
+work correctly together after all the changes made in Phases 8 and 9.
+
+### 10.2 — Full route verification
+
+Started the server and tested every route in sequence:
+
+| Route | Method | Expected | Result |
+|---|---|---|---|
+| `/health` | GET | `{"status":"ok"}` | ✓ |
+| `/webhook/meta` | GET (correct token) | `CHALLENGE_123` echoed back | ✓ |
+| `/webhook/meta` | GET (wrong token) | `403` | ✓ |
+| `/webhook/meta` | POST (valid signature + leadgen payload) | `200`, lead identifiers logged | ✓ |
+| `/test/lead` | POST | `201`, lead emitted | ✓ |
+
+### 10.3 — Backend terminal output confirmed
+
+```
+Webhook verification successful — challenge returned
+Webhook verification failed — token mismatch
+Lead event received:
+  leadgen_id:    987654321
+  page_id:       123456789
+  form_id:       111222333
+  created_time:  1728259200
+  → Ready for Graph API retrieval (next phase)
+Test lead received: { id: 'test-...', name: 'Arjun', ... }
+New lead emitted to 0 client(s)
+```
+
+No route conflicts. Body parsing works correctly for each route type:
+- `/webhook/meta` receives raw Buffer → signature verified → JSON parsed manually
+- `/test/lead` receives parsed JSON object via express.json()
+
+### 10.4 — About META_PAGE_ID and META_PAGE_ACCESS_TOKEN
+
+These two variables are still placeholders in `.env`. They are not needed
+until the Graph API call phase. How to get them:
+
+**META_PAGE_ID:**
+Go to `developers.facebook.com/tools/explorer/` → run `me/accounts` → copy
+the `id` value of the page associated with the Lead Form.
+
+**META_PAGE_ACCESS_TOKEN:**
+Same Graph API Explorer → select your app → Generate Access Token → grant
+permissions (`leads_retrieval`, `pages_manage_metadata`, `pages_show_list`,
+`pages_read_engagement`, `ads_management`) → switch dropdown from User to
+your Page → copy the `EAA...` token shown.
+
+Note: this is a short-lived token (~1 hour). Regenerate it right before
+recording the demo Loom. Long-lived token exchange can be done later if needed.
+
+---
+
+## Phase 11 — Local End-to-End Test and Documentation
+
+### 11.1 — Purpose of this phase
+
+Before moving to the next feature (ngrok + Meta Dashboard setup), we run
+one clean full test of the entire webhook feature locally. This confirms
+that all routes introduced in Phases 7–10 work together without conflict
+and produces a reference test sequence for the build log.
+
+### 11.2 — Complete test sequence
+
+Server started with `npm start` in `backend/`. Five tests run in sequence:
+
+**Test 1 — GET /health**
+```bash
+curl -s http://localhost:3001/health
+```
+Response: `{"status":"ok"}`
+Confirms: server starts, Express is running, dotenv loaded correctly. ✓
+
+**Test 2 — GET /webhook/meta with correct token**
+```bash
+curl -s "http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=<META_VERIFY_TOKEN>&\
+hub.challenge=CHALLENGE_ABCDEF"
+```
+Response body: `CHALLENGE_ABCDEF`
+Confirms: verification passes, challenge echoed back exactly. ✓
+
+**Test 3 — GET /webhook/meta with wrong token**
+```bash
+curl -s -o /dev/null -w "%{http_code}" \
+"http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=WRONG_TOKEN&\
+hub.challenge=CHALLENGE_ABCDEF"
+```
+HTTP status: `403`
+Confirms: wrong token is rejected correctly. ✓
+
+**Test 4 — POST /webhook/meta with valid leadgen payload**
+
+Payload simulates what Meta sends for a real lead event:
+```json
+{
+  "object": "page",
+  "entry": [{
+    "id": "123456789",
+    "time": 1728259200,
+    "changes": [{
+      "field": "leadgen",
+      "value": {
+        "leadgen_id": 987654321,
+        "page_id": 123456789,
+        "form_id": 111222333,
+        "created_time": 1728259200
+      }
+    }]
+  }]
+}
+```
+HMAC-SHA256 signature computed from META_APP_SECRET and sent in header.
+
+HTTP status: `200`
+Backend terminal logged:
+```
+Webhook POST received — object type: page
+Lead event received:
+  leadgen_id:    987654321
+  page_id:       123456789
+  form_id:       111222333
+  created_time:  1728259200
+  → Ready for Graph API retrieval (next phase)
+```
+Confirms: signature verified, payload parsed, leadgen event extracted. ✓
+
+**Test 5 — POST /test/lead (existing dev route)**
+```bash
+curl -s -X POST http://localhost:3001/test/lead \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Deepa Nair","email":"deepa@example.com","phone":"9812345678"}'
+```
+HTTP status: `201`
+Confirms: existing routes not broken by webhook body parsing changes. ✓
+
+### 11.3 — What this issue has built
+
+At the start of this issue the system was:
+```
+POST /test/lead  →  backend  →  Socket.IO  →  React Native
+```
+
+At the end of this issue the system is:
+```
+Meta Lead Testing Tool
+        ↓
+Meta fires leadgen event
+        ↓
+POST /webhook/meta  (HTTPS + X-Hub-Signature-256)
+        ↓
+Verify signature (HMAC-SHA256 with META_APP_SECRET)
+        ↓
+Parse payload
+        ↓
+Extract leadgen_id, page_id, form_id
+        ↓
+Log identifiers
+        ↓  ← stopping point for this issue
+[Graph API call — next issue]
+```
+
+Socket.IO and React Native are untouched — they still work exactly as before.
+
+### 11.4 — What is NOT done yet (next issue scope)
+
+- ngrok tunnel to expose local backend to the internet
+- Meta Developer App dashboard — webhook URL + verification setup
+- Page subscription to `leadgen` events
+- Meta Lead Testing Tool — real webhook delivery test
+- Graph API call using `leadgen_id` to retrieve actual lead data
+- Socket.IO emit of real lead to React Native
+
+---
+
+## Current State of the Project
+
+### Files created or modified across all phases so far
+
+```
+MetaLeadPulse/
+├── .gitignore
+├── README.md
+├── docs/
+│   ├── 01-problem-understanding.md
+│   ├── 02-meta-integration-research.md
+│   ├── 03-architecture.md
+│   ├── 04-build-sequence.md          ← this file
+│   └── decisions/
+│       ├── 001-realtime-communication.md
+│       └── 002-no-persistent-storage.md
+├── backend/
+│   ├── .env                          (not committed — contains secrets)
+│   ├── .env.example                  (committed — variable names only)
+│   ├── package.json                  (express + socket.io + dotenv)
+│   └── src/
+│       ├── server.js                 (steps 1–12, webhook router mounted)
+│       └── webhook/
+│           └── index.js              (GET verification + POST event handler)
+└── mobile/
+    └── src/
+        ├── app/
+        │   └── index.tsx             (Leads screen)
+        └── services/
+            └── socket.ts             (Socket.IO client)
+```
+
+### How to run the current state from scratch
+
+**Terminal 1 — Backend:**
+```bash
+cd MetaLeadPulse/backend
+npm install        # only needed first time
+npm start
+```
+Expected:
+```
+Backend running on http://localhost:3001
+Health check: http://localhost:3001/health
+Test lead:   POST http://localhost:3001/test/lead
+```
+
+**Terminal 2 — Mobile:**
+```bash
+cd MetaLeadPulse/mobile
+npm install        # only needed first time
+npx expo start
+```
+Press `i` for iOS simulator.
+
+**Test webhook verification:**
+```bash
+curl "http://localhost:3001/webhook/meta?\
+hub.mode=subscribe&\
+hub.verify_token=<your_META_VERIFY_TOKEN>&\
+hub.challenge=TEST123"
+# Expected response: TEST123
+```
+
+**Test a fake lead (realtime pipeline):**
+```bash
+curl -X POST http://localhost:3001/test/lead \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Rahul","email":"rahul@example.com","phone":"9876543210"}'
+```
+
+### What is not done yet
+
+- ngrok + Meta Dashboard webhook configuration
+- Page subscription to leadgen events
+- Meta Lead Testing Tool end-to-end test
+- Graph API call to retrieve actual lead data from leadgen_id
+- Socket.IO emit of real Meta lead to React Native
+
+---
+
 *This file is updated at the end of every new phase.*
