@@ -4,6 +4,7 @@
 .env.local
 .env.*.local
 !.env.example
+mobile/.env.local
 
 # Node / Backend
 node_modules/

@@ -1,6 +1,7 @@
 import { io } from 'socket.io-client';
 
-const BACKEND_URL = 'http://192.168.1.2:3001';
+const BACKEND_URL =
+  process.env.EXPO_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
 // NOTE: Using the Mac's LAN IP instead of localhost.
 // iOS simulator on this setup does not resolve localhost to the host Mac.
