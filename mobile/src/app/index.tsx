@@ -12,22 +12,41 @@ type Lead = {
   name: string;
   email: string;
   phone: string;
+  source: string;
+  company: string;
   createdAt: string;
 };
 
+type ConnectionStatus = 'connecting' | 'connected' | 'disconnected';
+
+function getInitialStatus(): ConnectionStatus {
+  if (socket.connected) return 'connected';
+  if (socket.disconnected) return 'disconnected';
+  return 'connecting';
+}
+
 export default function LeadsScreen() {
   const [leads, setLeads] = useState<Lead[]>([]);
-  const [connected, setConnected] = useState(false);
+  const [status, setStatus] = useState<ConnectionStatus>(getInitialStatus);
 
   useEffect(() => {
     function onConnect() {
       console.log('Connected to backend. Socket ID:', socket.id);
-      setConnected(true);
+      setStatus('connected');
     }
 
     function onDisconnect() {
       console.log('Disconnected from backend.');
-      setConnected(false);
+      setStatus('disconnected');
+    }
+
+    function onReconnectAttempt() {
+      setStatus('connecting');
+    }
+
+    function onConnectError(err: Error) {
+      console.warn('Connection error:', err.message);
+      setStatus('disconnected');
     }
 
     function onNewLead(incomingLead: Lead) {
@@ -38,15 +57,15 @@ export default function LeadsScreen() {
     socket.on('connect', onConnect);
     socket.on('disconnect', onDisconnect);
     socket.on('new-lead', onNewLead);
-
-    if (socket.connected) {
-      setConnected(true);
-    }
+    socket.on('connect_error', onConnectError);
+    socket.io.on('reconnect_attempt', onReconnectAttempt);
 
     return () => {
       socket.off('connect', onConnect);
       socket.off('disconnect', onDisconnect);
       socket.off('new-lead', onNewLead);
+      socket.off('connect_error', onConnectError);
+      socket.io.off('reconnect_attempt', onReconnectAttempt);
     };
   }, []);
 
@@ -57,7 +76,12 @@ export default function LeadsScreen() {
           <ThemedText type="title">Leads</ThemedText>
           <View style={[
             styles.statusDot,
-            { backgroundColor: connected ? '#34C759' : '#FF3B30' }
+            {
+              backgroundColor:
+                status === 'connected' ? '#34C759' :
+                  status === 'connecting' ? '#1e00ff' :
+                    '#FF3B30'
+            }
           ]} />
         </ThemedView>
 
@@ -79,6 +103,8 @@ export default function LeadsScreen() {
               {item.phone ? (
                 <Text style={styles.leadDetail}>{item.phone}</Text>
               ) : null}
+              {item.company ? <Text style={styles.leadDetail}>{item.company}</Text> : null}
+              {item.source ? <Text style={styles.leadDetail}>{item.source}</Text> : null}
               <Text style={styles.leadTime}>
                 {new Date(item.createdAt).toLocaleTimeString()}
               </Text>

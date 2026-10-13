@@ -12,4 +12,6 @@ const BACKEND_URL =
 
 export const socket = io(BACKEND_URL, {
   transports: ['websocket'],
+  reconnectionDelay: 3000,
+  reconnectionDelayMax: 5000,
 });
