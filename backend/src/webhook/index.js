@@ -32,13 +32,11 @@ router.get('/', (req, res) => {
 });
 
 router.post('/', (req, res) => {
-    res.sendStatus(200);
-
     const signature = req.headers['x-hub-signature-256'];
 
     if (!signature) {
-        console.warn('Webhook POST received without X-Hub-Signature-256 header');
-        return;
+        console.warn('Webhook POST rejected — no X-Hub-Signature-256 header');
+        return res.sendStatus(400);
     }
 
     const expectedSignature = 'sha256=' + crypto
@@ -51,9 +49,11 @@ router.post('/', (req, res) => {
 
     if (signatureBuffer.length !== expectedBuffer.length ||
         !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) {
-        console.warn('Webhook POST signature mismatch — ignoring request');
-        return;
+        console.warn('Webhook POST rejected — signature mismatch');
+        return res.sendStatus(400);
     }
+
+    res.sendStatus(200);
 
     let payload;
     try {

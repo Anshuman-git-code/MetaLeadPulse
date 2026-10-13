@@ -51,7 +51,14 @@ export default function LeadsScreen() {
 
     function onNewLead(incomingLead: Lead) {
       console.log('New lead received:', incomingLead);
-      setLeads(prev => [incomingLead, ...prev]);
+      setLeads(prev => {
+        const alreadyExists = prev.some(lead => lead.id === incomingLead.id);
+        if (alreadyExists) {
+          console.log('Duplicate lead ignored:', incomingLead.id);
+          return prev;
+        }
+        return [incomingLead, ...prev];
+      });
     }
 
     socket.on('connect', onConnect);
