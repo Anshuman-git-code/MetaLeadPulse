@@ -11,8 +11,33 @@ async function retrieveLead(leadgenId) {
 
     console.log(`Retrieving lead ${leadgenId} from Meta Graph API...`);
 
-    const response = await fetch(url);
-    const data = await response.json();
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 8000);
+
+    let response;
+    try {
+        response = await fetch(url, { signal: controller.signal });
+    } catch (err) {
+        if (err.name === 'AbortError') {
+            throw new Error(`Meta Graph API timed out for lead ${leadgenId}`);
+        }
+        throw new Error(`Meta Graph API network error: ${err.message}`);
+    } finally {
+        clearTimeout(timeout);
+    }
+
+    if (!response.ok) {
+        throw new Error(
+            `Meta Graph API returned HTTP ${response.status} for lead ${leadgenId}`
+        );
+    }
+
+    let data;
+    try {
+        data = await response.json();
+    } catch (err) {
+        throw new Error(`Meta Graph API returned invalid JSON for lead ${leadgenId}`);
+    }
 
     if (data.error) {
         throw new Error(
@@ -21,7 +46,6 @@ async function retrieveLead(leadgenId) {
     }
 
     console.log(`Lead ${leadgenId} retrieved successfully`);
-
     return data;
 }
 
